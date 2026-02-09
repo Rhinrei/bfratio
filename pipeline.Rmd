@@ -1,0 +1,1598 @@
+---
+title: "Pipeline"
+output: html_document
+date: "2026-01-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(stringr)
+library(decontam)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(vegan)
+library(phyloseq)
+library(DESeq2)
+library(ggpubr)
+```
+
+Data load healthy
+
+```{r}
+df_healthy_16s <- read_excel("data/healthy_16s.xlsx")
+df_healthy_its <- read_excel("data/healthy_its.xlsx")
+df_clean_healthy_16s <- df_healthy_16s[!is.na(df_healthy_16s$Taxonomy) &
+                 df_healthy_16s$Taxonomy != "" &
+                 df_healthy_16s$Taxonomy != "N/A", ]
+df_clean_healthy_its <- df_healthy_its[!is.na(df_healthy_its$Taxonomy) &
+                 df_healthy_its$Taxonomy != "" &
+                 df_healthy_its$Taxonomy != "N/A", ]
+
+
+cult <- c("17095-0004", "17095-0006", "17095-0008", "17095-0010", "17095-0012", "17095-0014", "17095-0016", "17095-0018", "17095-0020", "17095-0022", "17095-0024", "17095-0026", "17095-0028", "17095-0030", "17095-0032", "17095-0034", "17095-0036", "17095-0038", "17095-0040", "17095-0042", "17095-0044", "17095-0046", "17095-0048", "17095-0050", "17095-0052", "17095-0054", "17095-0056", "17095-0058")
+
+remove_patterns <- c("17095-0059",
+                     "17095-0060",
+                     "17095-0061",
+                     "17095-0062",
+                     "17095-MoComB",
+                     "17095-NTC_S96",
+                     "17095-QUE6_S88",
+                     cult)
+
+colnames(df_clean_healthy_16s)[grep(paste(remove_patterns, collapse="|"), colnames(df_clean_healthy_16s))]
+df_clean_healthy_16s <- df_clean_healthy_16s %>%
+  select(-matches(paste(remove_patterns, collapse = "|")))
+
+colnames(df_clean_healthy_its)[grep(paste(remove_patterns, collapse="|"), colnames(df_clean_healthy_its))]
+df_clean_healthy_its <- df_clean_healthy_its %>%
+  select(-matches(paste(remove_patterns, collapse = "|")))
+```
+
+Data load disease
+
+```{r cars}
+df_disease_16s <- read_excel("C:\\Users\\Admin\\Documents\\bfratio\\data\\16S featureTable.sample.g.absolute.xlsm")
+df_disease_its <- read.delim("C:\\Users\\Admin\\Documents\\bfratio\\data\\featureTable.sample.g.absolute.xls")
+
+# Sarcoidosis
+sarc_samples <- c("S2", "S7", "S16", "S26", "S33", "S37", "S42", "S47", "S51", "S54", "S57", "S61", "S64")
+
+# Controls for sarcoidosis
+control_s_samples <- c("S12", "S21", "S30", "S41", "S46")
+
+# Other lung diseases (Old) + their controls
+old_samples <- c("P67", "P71", "P75", "P79", "P83", "SK244", "SK248")
+control_p_sample <- c("P87")
+
+selected_samples <- c(sarc_samples, control_s_samples, old_samples, control_p_sample)
+
+final_df_disease_16s <- df_disease_16s %>%
+  select(Taxonomy, Tax_detail, all_of(intersect(selected_samples, names(df_disease_16s))))
+
+final_df_disease_its <- df_disease_its %>%
+  select(Taxonomy, Tax_detail, all_of(intersect(selected_samples, names(df_disease_its))))
+```
+
+Healthy filtration \>3
+
+```{r}
+meta_cols <- c("Name", "Taxonomy", "Combined Abundance",
+               "Min", "Max", "Mean", "Median", "Std")
+
+df_no_low_healthy_16s <- df_clean_healthy_16s[df_clean_healthy_16s$`Combined Abundance` > 3, ]
+
+nrow(df_clean_healthy_16s)      # before
+nrow(df_no_low_healthy_16s)     # after
+df_no_low_healthy_its <- df_clean_healthy_its[df_clean_healthy_its$`Combined Abundance` > 3, ]
+
+nrow(df_clean_healthy_its)      # before
+nrow(df_no_low_healthy_its)     # after
+```
+
+Diseases filtration \>3
+
+```{r}
+counts_only <- final_df_disease_16s %>% select(-Taxonomy, -Tax_detail)
+row_sums <- rowSums(counts_only)
+filtered_df_disease_16s <- final_df_disease_16s[row_sums >= 3, ]
+
+print(paste("Taxa before:", nrow(final_df_disease_16s)))
+print(paste("Taxa after filter 3:", nrow(filtered_df_disease_16s)))
+
+counts_only <- final_df_disease_its %>% select(-Taxonomy, -Tax_detail)
+row_sums <- rowSums(counts_only)
+filtered_df_disease_its <- final_df_disease_its[row_sums >= 3, ]
+
+print(paste("Taxa before:", nrow(final_df_disease_its)))
+print(paste("Taxa after filter 3:", nrow(filtered_df_disease_its)))
+```
+
+Decontam healthy
+
+```{r}
+last_meta_col <- which(colnames(df_clean_healthy_16s) == "Std")
+seq_col <- which(colnames(df_clean_healthy_16s) == "Sequence")
+sample_cols <- (last_meta_col + 1):(seq_col - 1)
+
+controls <- c("17095-0063_S40", "17095-0064_S48")
+count_mat_low_16s <- as.matrix(df_no_low_healthy_16s[, sample_cols])
+is_control_16s <- colnames(count_mat_low_16s) %in% controls
+contam_results_healthy_16s <- isContaminant(t(count_mat_low_16s),
+                                method = "prevalence",
+                                neg = is_control_16s)
+table(contam_results_healthy_16s$contaminant)
+
+df_no_low_healthy_16s$contaminant <- contam_results_healthy_16s$contaminant
+df_clean_decontam_healthy_16s <- df_no_low_healthy_16s %>% filter(!contaminant)
+df_clean_decontam_healthy_16s <- df_clean_decontam_healthy_16s %>%
+  select(-all_of(controls))
+
+
+
+fungal_controls <- c("17095-0063_S72", "17095-0064_S80")
+count_mat_low_its <- as.matrix(df_no_low_healthy_its[, sample_cols])
+is_control_its <- colnames(count_mat_low_its) %in% fungal_controls
+contam_results_healthy_its <- isContaminant(t(count_mat_low_its),
+                                method = "prevalence",
+                                neg = is_control_its)
+table(contam_results_healthy_its$contaminant)
+
+df_no_low_healthy_its$contaminant <- contam_results_healthy_its$contaminant
+df_clean_decontam_healthy_its <- df_no_low_healthy_its %>% filter(!contaminant)
+
+df_clean_decontam_healthy_its <- df_clean_decontam_healthy_its %>%
+  select(-all_of(fungal_controls))
+
+sample_cols <- setdiff(sample_cols,
+                       which(colnames(df_clean_decontam_healthy_16s) %in% c("Sequence","contaminant")))
+df_clean_decontam_healthy_16s <- df_clean_decontam_healthy_16s %>%
+  filter(rowSums(across(all_of(sample_cols))) > 0)
+df_clean_decontam_healthy_16s <- dplyr::select(
+  df_clean_decontam_healthy_16s,
+  -all_of(colnames(df_clean_decontam_healthy_16s)[sample_cols][
+    colSums(df_clean_decontam_healthy_16s[, sample_cols, drop = FALSE]) == 0
+  ])
+)
+df_clean_decontam_healthy_its <- df_clean_decontam_healthy_its %>%
+  filter(rowSums(across(all_of(sample_cols))) > 0)
+df_clean_decontam_healthy_its <- dplyr::select(
+  df_clean_decontam_healthy_its,
+  -all_of(colnames(df_clean_decontam_healthy_its)[sample_cols][
+    colSums(df_clean_decontam_healthy_its[, sample_cols, drop = FALSE]) == 0
+  ])
+)
+```
+
+Decontam disease
+
+```{r}
+extract_rank <- function(tax_strings, prefix) {
+  # Find pattern: prefix (e.g., "p__"), then any text except ";", then end or ";"
+  pattern <- paste0(prefix, "__([^;]+)")
+  matches <- str_match(tax_strings, pattern)[, 2]
+  # If not found or empty -> "Unidentified"
+  matches <- ifelse(is.na(matches) | matches == "", "Unidentified", matches)
+  # If this is "Others" (from the first column), keep as is or mark it
+  matches <- ifelse(tax_strings == "Others", "Others", matches)
+  return(matches)
+}
+
+# 2. Build a proper taxonomy matrix
+# Take TAX_DETAIL column from df_filtered
+tax_strings <- filtered_df_disease_16s$Tax_detail
+
+# Create a dataframe manually by extracting each level
+tax_parsed <- data.frame(
+  Kingdom = extract_rank(tax_strings, "k"),
+  Phylum  = extract_rank(tax_strings, "p"),
+  Class   = extract_rank(tax_strings, "c"),
+  Order   = extract_rank(tax_strings, "o"),
+  Family  = extract_rank(tax_strings, "f"),
+  Genus   = extract_rank(tax_strings, "g"),
+  row.names = filtered_df_disease_16s$Taxonomy # Row names as in the file
+)
+
+# Convert to a matrix
+tax_mat <- as.matrix(tax_parsed)
+
+# 3. OTU matrix and metadata (as before)
+metadata <- data.frame(SampleID = names(filtered_df_disease_16s %>% select(-Taxonomy, -Tax_detail))) %>%
+  mutate(
+    Group = case_when(
+      SampleID %in% toupper(sarc_samples) ~ "Sarcoidosis",
+      SampleID %in% toupper(old_samples) ~ "Other_Lung_Diseases",
+      TRUE ~ "Control"
+    ),
+    Batch = case_when(
+      SampleID %in% toupper(c(sarc_samples, control_s_samples)) ~ "Batch_S",
+      TRUE ~ "Batch_P"
+    ),
+    is_neg = ifelse(Group == "Control", TRUE, FALSE)
+  ) %>%
+  column_to_rownames("SampleID")
+
+otu_mat <- filtered_df_disease_16s %>% select(-Tax_detail) %>% remove_rownames() %>% column_to_rownames("Taxonomy") %>% as.matrix()
+
+# 4. Build phyloseq
+ps <- phyloseq(otu_table(otu_mat, taxa_are_rows=TRUE), tax_table(tax_mat), sample_data(metadata))
+ps_raw_bacteria <- ps
+# === 6. DECONTAMINATION (WITH BATCHES) ===
+# We use the batch argument.
+# IMPORTANT: Since Batch_P has only 1 control, the prevalence method may not work ideally there,
+# but this is the best we can do to avoid corrupting Batch_S.
+contam_res <- isContaminant(ps, method = "prevalence", neg = "is_neg", batch = "Batch", threshold = 0.1)
+
+print("Contaminants found:")
+table(contam_res$contaminant)
+
+# Remove junk
+ps_clean <- prune_taxa(!contam_res$contaminant, ps)
+
+# === 7. REMOVE CONTROLS AND RAREFACTION ===
+# Now remove technical samples (water), keep ONLY patients (both S and P)
+ps_patients_only_16s <- subset_samples(ps_clean, Group != "Control")
+ps_patients_only_16s <- prune_taxa(taxa_sums(ps_patients_only_16s) > 0, ps_patients_only_16s)
+
+
+tax_strings <- filtered_df_disease_its$Tax_detail
+
+# Create a dataframe manually by extracting each level
+tax_parsed <- data.frame(
+  Kingdom = extract_rank(tax_strings, "k"),
+  Phylum  = extract_rank(tax_strings, "p"),
+  Class   = extract_rank(tax_strings, "c"),
+  Order   = extract_rank(tax_strings, "o"),
+  Family  = extract_rank(tax_strings, "f"),
+  Genus   = extract_rank(tax_strings, "g"),
+  row.names = filtered_df_disease_its$Taxonomy # Row names as in the file
+)
+
+# Convert to a matrix
+tax_mat <- as.matrix(tax_parsed)
+
+# 3. OTU matrix and metadata (as before)
+metadata <- data.frame(SampleID = names(filtered_df_disease_its %>% select(-Taxonomy, -Tax_detail))) %>%
+  mutate(
+    Group = case_when(
+      SampleID %in% toupper(sarc_samples) ~ "Sarcoidosis",
+      SampleID %in% toupper(old_samples) ~ "Other_Lung_Diseases",
+      TRUE ~ "Control"
+    ),
+    Batch = case_when(
+      SampleID %in% toupper(c(sarc_samples, control_s_samples)) ~ "Batch_S",
+      TRUE ~ "Batch_P"
+    ),
+    is_neg = ifelse(Group == "Control", TRUE, FALSE)
+  ) %>%
+  column_to_rownames("SampleID")
+
+otu_mat <- filtered_df_disease_its %>% select(-Tax_detail) %>% remove_rownames() %>% column_to_rownames("Taxonomy") %>% as.matrix()
+
+# 4. Build phyloseq
+ps <- phyloseq(otu_table(otu_mat, taxa_are_rows=TRUE), tax_table(tax_mat), sample_data(metadata))
+ps_raw_fungi <- ps
+# === 6. DECONTAMINATION (WITH BATCHES) ===
+# We use the batch argument.
+# IMPORTANT: Since Batch_P has only 1 control, the prevalence method may not work ideally there,
+# but this is the best we can do to avoid corrupting Batch_S.
+contam_res <- isContaminant(ps, method = "prevalence", neg = "is_neg", batch = "Batch", threshold = 0.1)
+
+print("Contaminants found:")
+table(contam_res$contaminant)
+
+# Remove junk
+ps_clean <- prune_taxa(!contam_res$contaminant, ps)
+
+# === 7. REMOVE CONTROLS AND RAREFACTION ===
+# Now remove technical samples (water), keep ONLY patients (both S and P)
+ps_patients_only_its <- subset_samples(ps_clean, Group != "Control")
+ps_patients_only_its <- prune_taxa(taxa_sums(ps_patients_only_its) > 0, ps_patients_only_its)
+ntaxa(ps_patients_only_16s)
+ntaxa(ps_patients_only_its)
+```
+
+Prevalence in healthy
+
+```{r}
+last_meta_col <- which(colnames(df_clean_decontam_healthy_16s) == "Std")
+seq_col <- which(colnames(df_clean_decontam_healthy_16s) == "contaminant")
+sample_cols <- (last_meta_col + 1):(seq_col - 2)
+
+# 3. Matrix for calculations
+count_mat_decontam_healthy_16s <- as.matrix(df_clean_decontam_healthy_16s[, sample_cols])
+count_mat_decontam_healthy_16s <- count_mat_decontam_healthy_16s[, colSums(count_mat_decontam_healthy_16s) > 0, drop = FALSE]
+
+
+tax_levels_16s <- df_clean_decontam_healthy_16s %>%
+  separate(Taxonomy,
+           into = paste0("D", 0:6),
+           sep = ", ",
+           fill = "right",
+           remove = FALSE)
+
+for(i in 0:6){
+  col <- paste0("D", i)
+  tax_levels_16s[[col]] <- str_replace(tax_levels_16s[[col]], "^D_._+", "")
+}
+
+last_meta_col <- which(colnames(df_clean_decontam_healthy_its) == "Std")
+seq_col <- which(colnames(df_clean_decontam_healthy_its) == "Sequence")
+sample_cols <- (last_meta_col + 1):(seq_col - 1)
+
+# 3. Matrix for calculations
+count_mat_decontam_healthy_its <- as.matrix(df_clean_decontam_healthy_its[, sample_cols])
+count_mat_decontam_healthy_its <- count_mat_decontam_healthy_its[, colSums(count_mat_decontam_healthy_its) > 0, drop = FALSE]
+
+tax_levels_its <- df_clean_decontam_healthy_its %>%
+  separate(Taxonomy,
+           into = paste0("D", 0:6),
+           sep = ", ",
+           fill = "right",
+           remove = FALSE)
+
+for(i in 0:6){
+  col <- paste0("D", i)
+  tax_levels_its[[col]] <- str_replace(tax_levels_its[[col]], "^D_._+", "")
+}
+ 
+calc_prevalence <- function(tax_table, level_col, count_mat) {
+  taxa_level <- trimws(tax_table[[level_col]])
+  taxa_level[is.na(taxa_level)] <- "Unassigned"
+  
+  uniq_taxa <- unique(taxa_level)
+  
+  res <- lapply(uniq_taxa, function(tax) {
+    rows <- which(taxa_level == tax)
+    present_per_sample <- colSums(count_mat[rows, , drop = FALSE] > 0) > 0
+    data.frame(
+      taxon = tax,
+      prevalence = mean(present_per_sample)
+    )
+  })
+  
+  do.call(rbind, res)
+}
+
+
+replace_unassigned <- function(df, levels = paste0("D", 0:6)) {
+  for (lvl in levels) {
+    df[[lvl]] <- ifelse(
+      is.na(df[[lvl]]) | df[[lvl]] == "",
+      "Unassigned",
+      df[[lvl]]
+    )
+  }
+  return(df)
+}
+
+tax_levels_16s <- replace_unassigned(tax_levels_16s)
+
+prev_D0 <- calc_prevalence(tax_levels_16s, "D0", count_mat_decontam_healthy_16s)
+prev_D1 <- calc_prevalence(tax_levels_16s, "D1", count_mat_decontam_healthy_16s)
+prev_D2 <- calc_prevalence(tax_levels_16s, "D2", count_mat_decontam_healthy_16s)
+prev_D3 <- calc_prevalence(tax_levels_16s, "D3", count_mat_decontam_healthy_16s)
+prev_D4 <- calc_prevalence(tax_levels_16s, "D4", count_mat_decontam_healthy_16s)
+prev_D5 <- calc_prevalence(tax_levels_16s, "D5", count_mat_decontam_healthy_16s)
+prev_D6 <- calc_prevalence(tax_levels_16s, "D6", count_mat_decontam_healthy_16s)
+unique_counts <- sapply(tax_levels_16s[paste0("D", 0:6)], function(x) length(unique(x)))
+unique_counts
+
+# in how many samples the taxon appears. 1 means Firmicutes were in every sample
+levels_vec <- paste0("D", 0:6)
+
+top3_list <- list()
+
+for (lvl in levels_vec) {
+  # compute prevalence
+  prev_tbl <- calc_prevalence(tax_levels_16s, lvl, count_mat_decontam_healthy_16s)
+  
+  # sort from highest to lowest
+  prev_tbl <- prev_tbl[order(-prev_tbl$prevalence), ]
+  
+  # take the real top-3 by prevalence
+  top3 <- prev_tbl[1:3, ]
+ 
+  print(top3)
+  
+  # save
+  top3_list[[lvl]] <- top3
+}
+
+tax_levels_its <- replace_unassigned(tax_levels_its)
+
+prev_D0 <- calc_prevalence(tax_levels_its, "D0", count_mat_decontam_healthy_its)
+prev_D1 <- calc_prevalence(tax_levels_its, "D1", count_mat_decontam_healthy_its)
+prev_D2 <- calc_prevalence(tax_levels_its, "D2", count_mat_decontam_healthy_its)
+prev_D3 <- calc_prevalence(tax_levels_its, "D3", count_mat_decontam_healthy_its)
+prev_D4 <- calc_prevalence(tax_levels_its, "D4", count_mat_decontam_healthy_its)
+prev_D5 <- calc_prevalence(tax_levels_its, "D5", count_mat_decontam_healthy_its)
+prev_D6 <- calc_prevalence(tax_levels_its, "D6", count_mat_decontam_healthy_its)
+unique_counts <- sapply(tax_levels_its[paste0("D", 0:6)], function(x) length(unique(x)))
+unique_counts
+
+# in how many samples the taxon appears. 1 means Firmicutes were in every sample
+levels_vec <- paste0("D", 0:6)
+
+top3_list <- list()
+
+for (lvl in levels_vec) {
+  # compute prevalence
+  prev_tbl <- calc_prevalence(tax_levels_its, lvl, count_mat_decontam_healthy_its)
+  
+  # sort from highest to lowest
+  prev_tbl <- prev_tbl[order(-prev_tbl$prevalence), ]
+  
+  # take the real top-3 by prevalence
+  top3 <- prev_tbl[1:3, ]
+  
+  print(top3)
+  
+  # save
+  top3_list[[lvl]] <- top3
+}
+```
+
+Fractions in healthy
+
+```{r}
+calc_taxon_fraction <- function(count_mat, tax_table, level_col, top_n = 5) {
+  taxa <- trimws(tax_table[[level_col]])
+  taxa[is.na(taxa) | taxa == ""] <- "Unidentified"
+  
+  good <- colSums(count_mat) > 0
+  count_mat <- count_mat[, good, drop = FALSE]
+
+  # relative abundance per sample (%)
+  rel_mat <- sweep(count_mat, 2, colSums(count_mat), "/") * 100
+
+  # aggregate ASVs into taxa
+  rel_by_taxon <- rowsum(rel_mat, group = taxa)
+
+  mean_abundance <- rowMeans(rel_by_taxon)
+
+  out <- data.frame(
+    taxon = rownames(rel_by_taxon),
+    Mean_Abundance_Pct = round(mean_abundance, 2),
+    stringsAsFactors = FALSE
+  ) |>
+    dplyr::arrange(dplyr::desc(Mean_Abundance_Pct))
+
+  head(out, top_n)
+}
+
+frac_D0 <- calc_taxon_fraction(count_mat_decontam_healthy_16s, tax_levels_16s, "D0")  # Kingdom
+frac_D1 <- calc_taxon_fraction(count_mat_decontam_healthy_16s, tax_levels_16s, "D1")  # Phylum
+frac_D2 <- calc_taxon_fraction(count_mat_decontam_healthy_16s, tax_levels_16s, "D2")  # Class
+frac_D3 <- calc_taxon_fraction(count_mat_decontam_healthy_16s, tax_levels_16s, "D3")  # Order
+frac_D4 <- calc_taxon_fraction(count_mat_decontam_healthy_16s, tax_levels_16s, "D4")  # Family
+frac_D5 <- calc_taxon_fraction(count_mat_decontam_healthy_16s, tax_levels_16s, "D5")  # Genus
+frac_D6 <- calc_taxon_fraction(count_mat_decontam_healthy_16s, tax_levels_16s, "D6")  # Species/ASV description
+levels_vec <- paste0("D", 0:6)
+
+top5_mean_16s <- list()
+
+for (lvl in levels_vec) {
+  top5_mean_16s[[lvl]] <- calc_taxon_fraction(
+    count_mat_decontam_healthy_16s,
+    tax_levels_16s,
+    lvl,
+    top_n = 5
+  )
+  print(top5_mean_16s[[lvl]])
+}
+
+frac_D0 <- calc_taxon_fraction(count_mat_decontam_healthy_its, tax_levels_its, "D0")  # Kingdom
+frac_D1 <- calc_taxon_fraction(count_mat_decontam_healthy_its, tax_levels_its, "D1")  # Phylum
+frac_D2 <- calc_taxon_fraction(count_mat_decontam_healthy_its, tax_levels_its, "D2")  # Class
+frac_D3 <- calc_taxon_fraction(count_mat_decontam_healthy_its, tax_levels_its, "D3")  # Order
+frac_D4 <- calc_taxon_fraction(count_mat_decontam_healthy_its, tax_levels_its, "D4")  # Family
+frac_D5 <- calc_taxon_fraction(count_mat_decontam_healthy_its, tax_levels_its, "D5")  # Genus
+frac_D6 <- calc_taxon_fraction(count_mat_decontam_healthy_its, tax_levels_its, "D6")  # Species/ASV description
+levels_vec <- paste0("D", 0:6)
+
+top5_mean_its <- list()
+
+for (lvl in levels_vec) {
+  top5_mean_its[[lvl]] <- calc_taxon_fraction(
+    count_mat_decontam_healthy_its,
+    tax_levels_its,
+    lvl,
+    top_n = 5
+  )
+  print(top5_mean_its[[lvl]])
+}
+```
+
+Prevalence and Fractions in disease
+
+```{r}
+
+calculate_group_stats <- function(physeq_obj, group_name, rank_name) {
+  
+  # 1. Aggregate taxa to the target level (e.g., collapse all species into one genus)
+  # NArm=FALSE is important to keep "Unidentified"
+  ps_glom <- tax_glom(physeq_obj, taxrank = rank_name, NArm = FALSE)
+  
+  # 2. Convert to percentages (Relative Abundance)
+  ps_rel <- transform_sample_counts(ps_glom, function(x) x / sum(x) * 100)
+  
+  # 3. Extract data table
+  otu_table_rel <- as.data.frame(otu_table(ps_rel)) # Percentages
+  otu_table_abs <- as.data.frame(otu_table(ps_glom)) # Absolute counts (for presence/absence)
+  tax_table_df <- as.data.frame(tax_table(ps_glom))
+  
+  # Taxon name at this level
+  tax_names <- tax_table_df[[rank_name]]
+  # Clean names (remove p__, g__, etc.)
+  tax_names_clean <- str_remove(tax_names, "^[kpcofg]__")
+  tax_names_clean <- ifelse(tax_names_clean == "" | is.na(tax_names_clean), "Unidentified", tax_names_clean)
+  
+  # 4. Compute metrics
+  # Prevalence (number of samples > 0)
+  n_samples <- nsamples(physeq_obj)
+  prevalence_counts <- rowSums(otu_table_abs > 0)
+  prevalence_pct <- (prevalence_counts / n_samples) * 100
+  
+  # Mean Abundance (mean percent by group)
+  mean_abundance <- rowMeans(otu_table_rel)
+  
+  # 5. Build final table
+  stats_df <- tibble::tibble(
+    Taxon = tax_names_clean,
+    Prevalence_Pct = round(prevalence_pct, 1),
+    Mean_Abundance_Pct = round(mean_abundance, 2),
+    Full_Taxonomy = rownames(tax_table_df) # Keep full taxonomy for provenance
+  ) %>%
+    arrange(desc(Mean_Abundance_Pct))
+  
+  # 7. CONSOLE OUTPUT (TOP-10)
+  print(head(stats_df[, c("Taxon", "Prevalence_Pct","Mean_Abundance_Pct")], 15), row.names = FALSE)
+}
+
+# ==========================================
+# 6. RUN CALCULATION (SARCOIDOSIS and OTHERS)
+# ==========================================
+
+# Split object into two disease groups
+ps_sarc_16s <- subset_samples(ps_patients_only_16s, Group == "Sarcoidosis")
+ps_sarc_16s <- prune_taxa(taxa_sums(ps_sarc_16s) > 0, ps_sarc_16s)
+
+ps_sarc_its <- subset_samples(ps_patients_only_its, Group == "Sarcoidosis")
+ps_sarc_its <- prune_taxa(taxa_sums(ps_sarc_its) > 0, ps_sarc_its)
+
+ps_other_16s <- subset_samples(ps_patients_only_16s, Group == "Other_Lung_Diseases")
+ps_other_16s <- prune_taxa(taxa_sums(ps_other_16s) > 0, ps_other_16s)
+
+ps_other_its <- subset_samples(ps_patients_only_its, Group == "Other_Lung_Diseases")
+ps_other_its <- prune_taxa(taxa_sums(ps_other_its) > 0, ps_other_its)
+
+# Levels to compute
+ranks <- c("Phylum", "Class", "Order", "Family", "Genus")
+
+# for (r in ranks) {
+#   calculate_group_stats(ps_sarc_16s, "Sarcoidosis", r)
+# }
+
+# for (r in ranks) {
+#   calculate_group_stats(ps_sarc_its, "Sarcoidosis", r)
+# }
+
+# for (r in ranks) {
+#   calculate_group_stats(ps_other_16s, "OtherLungDiseases", r)
+# }
+
+# for (r in ranks) {
+#   calculate_group_stats(ps_other_its, "OtherLungDiseases", r)
+# }
+```
+
+Rarefication Healthy
+
+```{r}
+# 1) Counts matrix: taxa x samples
+otu_matrix_16s <- tax_levels_16s %>%
+  select(-starts_with("D"), -Name, -any_of(c("Sequence", "contaminant", "Combined Abundance", "Min", "Max", "Mean", "Median", "Std"))) %>%
+  group_by(Taxonomy) %>%
+  summarise(across(everything(), sum), .groups = "drop") %>%
+  column_to_rownames("Taxonomy") %>%
+  as.matrix()
+
+# 2) In vegan: samples x taxa
+vegan_matrix_16s <- t(otu_matrix_16s)
+
+# 3) Only samples with >0 reads
+total_reads <- rowSums(vegan_matrix_16s)
+vegan_final <- vegan_matrix_16s[total_reads > 0, , drop = FALSE]
+total_reads_final <- total_reads[total_reads > 0]
+
+# 4) Rarefaction curves plot + threshold 800
+cols_final <- ifelse(total_reads_final < 800, "red", "blue")
+
+png("Rarefaction_HighRes.png", width = 3000, height = 2100, res = 300)
+par(mar = c(5, 5, 4, 3))
+rarecurve(
+  vegan_final,
+  step = 20,
+  col = cols_final,
+  lwd = 1.5,
+  label = FALSE,
+  xlim = c(0, 5000),
+  xlab = "Number of reads per sample",
+  ylab = "Observed bacterial taxa",
+  main = "Rarefaction curves of bacterial communities in healthy individuals",
+  cex.lab = 1.6,   # axis labels
+  cex.axis = 1.4,  # axis tick labels
+  cex.main = 1.8   # title
+)
+
+abline(v = 800, col = "darkred", lty = 2, lwd = 2)
+text(x = 800, y = 10, labels = "800", col = "darkred", srt = 90, adj = c(-0.1, -0.5))
+dev.off()
+
+OTU <- otu_table(vegan_final, taxa_are_rows = FALSE)
+ps_healthy_16s <- phyloseq(OTU)
+ps_healthy_16s_pruned <- prune_samples(sample_sums(ps_healthy_16s) >= 800, ps_healthy_16s)
+ps_healthy_16s_rarefied <- rarefy_even_depth(ps_healthy_16s_pruned, sample.size = 800, replace = FALSE, rngseed = 123)
+
+
+otu_matrix_its <- tax_levels_its %>%
+  select(-starts_with("D"), -Name, -any_of(c("Sequence", "contaminant", "Combined Abundance", "Min", "Max", "Mean", "Median", "Std"))) %>%
+  group_by(Taxonomy) %>%
+  summarise(across(everything(), sum), .groups = "drop") %>%
+  column_to_rownames("Taxonomy") %>%
+  as.matrix()
+
+# 2) Convert to phyloseq format: samples in rows
+otu_clean <- otu_matrix_its[, colSums(otu_matrix_its) > 0]
+otu_clean <- otu_clean[rowSums(otu_clean) > 0, ]
+otu_samples_its <- t(otu_clean)
+
+# 3) OTU table -> phyloseq
+OTU <- otu_table(otu_samples_its, taxa_are_rows = FALSE)
+ps_healthy_its <- phyloseq(OTU)
+
+```
+
+Rarefication Disease
+
+```{r}
+otu_clean_df_disease_16s <- as.data.frame(t(otu_table(ps_patients_only_16s)))
+otu_clean_df_disease_its <- as.data.frame(t(otu_table(ps_patients_only_its)))
+
+total_reads_final_disease_16s <- rowSums(otu_clean_df_disease_16s)
+total_reads_final_disease_its <- rowSums(otu_clean_df_disease_its)
+
+cutoff_16s <- 10000
+cutoff_its <- 300
+
+# below threshold = red, above = blue
+cols_final_16s <- ifelse(total_reads_final_disease_16s < cutoff_16s, "red", "blue")
+cols_final_its <- ifelse(total_reads_final_disease_its < cutoff_its, "red", "blue")
+
+
+png(filename = "Rarefaction_HighResD.png", width = 3000, height = 2100, res = 300)
+par(mar = c(5, 5, 4, 3))
+rarecurve(otu_clean_df_disease_16s, 
+          step = 20, 
+          col = cols_final_16s, 
+          lwd = 1.5,
+          cex = 0.6,
+          label = FALSE,        # text off
+          xlim = c(0, 30000),
+          xlab = "Number of reads per sample",
+          ylab = "Observed bacterial taxa",
+          main = "Rarefaction curves of bacterial communities in patients",
+          cex.lab = 1.6,   # axis labels
+          cex.axis = 1.4,  # axis tick labels
+          cex.main = 1.8   # title
+)
+abline(v = 10000, col = "darkred", lty = 2, lwd = 2)
+text(x = 10000, y = 10, labels = "10000", col = "darkred", srt = 90, adj = c(-0.1, -0.5))
+dev.off()
+
+png(filename = "Rarefaction_HighResDFungi.png", width = 3000, height = 2100, res = 300)
+par(mar = c(5, 5, 4, 3))
+rarecurve(otu_clean_df_disease_its, 
+          step = 20, 
+          col = cols_final_its, 
+          lwd = 1.5,
+          cex = 0.6,
+          label = FALSE,        # text off
+          xlim = c(0, 1000),
+          xlab = "Number of reads per sample",
+          ylab = "Observed fungal taxa",
+          main = "Rarefaction curves of fungal communities in patients",
+          cex.lab = 1.6,   # axis labels
+          cex.axis = 1.4,  # axis tick labels
+          cex.main = 1.8   # title
+)
+abline(v = 300, col = "darkred", lty = 2, lwd = 2)
+text(x = 300, y = 10, labels = "300", col = "darkred", srt = 90, adj = c(-0.1, -0.5))
+dev.off()
+
+
+read_dist <- data.frame(
+  SampleID = sample_names(ps_patients_only_its),
+  TotalReads = as.numeric(sample_sums(ps_patients_only_its))
+) %>%
+  arrange(TotalReads) %>% 
+  mutate(Rank = row_number())
+head(read_dist, 15)
+
+min_depth_16s = 10000
+min_depth_its = 305
+
+ps_rarefied_16s <- rarefy_even_depth(ps_patients_only_16s, sample.size = min_depth_16s, rngseed = 711, trimOTUs = TRUE)
+ps_rarefied_its <- rarefy_even_depth(ps_patients_only_its, sample.size = min_depth_its, rngseed = 711, trimOTUs = TRUE)
+```
+
+Alpha-Diversity Healthy
+
+```{r}
+alpha_data_healthy_16s <- estimate_richness(ps_healthy_16s_rarefied, measures = c("Observed", "Shannon", "Simpson"))
+alpha_data_healthy_its <- estimate_richness(ps_healthy_its, measures = c("Observed", "Shannon", "Simpson"))
+
+alpha_data_healthy_16s$SampleID <- rownames(alpha_data_healthy_16s)
+alpha_data_healthy_its$SampleID <- rownames(alpha_data_healthy_its)
+
+alpha_data_healthy_16s <- alpha_data_healthy_16s[, c("SampleID", "Observed", "Shannon", "Simpson")]
+alpha_data_healthy_its <- alpha_data_healthy_its[, c("SampleID", "Observed", "Shannon", "Simpson")]
+
+# print(head(alpha_data_healthy_16s))
+# print(head(alpha_data_healthy_its))
+summary(alpha_data_healthy_16s)
+summary(alpha_data_healthy_its)
+
+
+plot_data <- alpha_data_healthy_16s %>%
+  pivot_longer(cols = c("Observed", "Shannon", "Simpson"),
+               names_to = "Metric",
+               values_to = "Value")
+
+ggplot(plot_data, aes(x = Metric, y = Value, fill = Metric)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) + # boxplot
+  geom_jitter(width = 0.2, size = 2, alpha = 0.7) + # points (each sample)
+  facet_wrap(~Metric, scales = "free") + # split into 3 panels, each with its own Y scale
+  theme_bw() +
+  labs(y = "Alpha Diversity Measure", x = "", title = "Alpha diversity of blood bacteriome in healthy individuals") +
+  theme(legend.position = "none",
+        axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16),
+        plot.title = element_text(size = 18, face = "bold"),
+        axis.text.x = element_blank(),
+        strip.text = element_text(size = 12, face = "bold"))
+ggsave("H16S_Observed_Plot.png", width = 8, height = 6, dpi = 300)
+
+p_fungi_alpha <- ggplot(alpha_data_healthy_its, aes(x = "", y = Observed)) +
+  geom_boxplot(fill = "orange", alpha = 0.5, outlier.shape = NA) +
+  geom_jitter(width = 0.1, size = 3, alpha = 0.7, color = "chocolate4") +
+  theme_bw() +
+  labs(
+    title = "Fungal richness (Observed taxa)",
+    subtitle = "Number of detected fungal taxa per sample (No rarefaction)",
+    y = "Observed taxa",
+    x = ""
+  ) +
+  theme(
+        axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16),
+        plot.title = element_text(size = 18, face = "bold"),
+        strip.text = element_text(size = 14),
+    axis.ticks.x = element_blank()
+  )
+
+ggsave("Fungi_Observed_Plot.png", plot = p_fungi_alpha, width = 6, height = 6, dpi = 300)
+```
+
+Alpha-Diversity Disease
+
+```{r}
+alpha_measures_disease_16s <- estimate_richness(ps_rarefied_16s, measures = c("Observed", "Shannon", "Simpson"))
+alpha_measures_disease_its <- estimate_richness(ps_rarefied_its, measures = c("Observed", "Shannon", "Simpson"))
+
+alpha_data_disease_16s <- cbind(sample_data(ps_rarefied_16s), alpha_measures_disease_16s)
+alpha_data_disease_its <- cbind(sample_data(ps_rarefied_its), alpha_measures_disease_its)
+
+test_obs_16s <- wilcox.test(Observed ~ Group, data = alpha_data_disease_16s)
+print(paste("Observed (Richness) p-value:", round(test_obs_16s$p.value, 4)))
+
+# For Shannon
+test_shannon_16s <- wilcox.test(Shannon ~ Group, data = alpha_data_disease_16s)
+print(paste("Shannon (Diversity) p-value:", round(test_shannon_16s$p.value, 4)))
+
+# For Simpson
+test_simpson_16s <- wilcox.test(Simpson ~ Group, data = alpha_data_disease_16s)
+print(paste("Simpson (Evenness) p-value:", round(test_simpson_16s$p.value, 4)))
+
+test_obs_its <- wilcox.test(Observed ~ Group, data = alpha_data_disease_its)
+print(paste("Observed (Richness) p-value:", round(test_obs_its$p.value, 4)))
+
+# For Shannon
+test_shannon_its <- wilcox.test(Shannon ~ Group, data = alpha_data_disease_its)
+print(paste("Shannon (Diversity) p-value:", round(test_shannon_its$p.value, 4)))
+
+# For Simpson
+test_simpson_its <- wilcox.test(Simpson ~ Group, data = alpha_data_disease_its)
+print(paste("Simpson (Evenness) p-value:", round(test_simpson_its$p.value, 4)))
+
+# 3. Nice plots (boxplots)
+# Reshape table for ggplot
+alpha_long_16s <- alpha_data_disease_16s %>% 
+  select(Group, Observed, Shannon, Simpson) %>%
+  pivot_longer(cols = c("Observed", "Shannon", "Simpson"), names_to = "Metric", values_to = "Value")
+
+p_alpha_16s <- ggplot(alpha_long_16s, aes(x = Group, y = Value, fill = Group)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, size = 2) + # points on top of boxes
+  facet_wrap(~Metric, scales = "free_y") + # three plots side by side
+  theme_bw() +
+  labs(title = "Alpha diversity of blood bacteriome in patients", x = "", y = "Alpha Diversity Measure") +
+  theme(legend.position = "none", 
+        axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16),
+        plot.title = element_text(size = 18, face = "bold"),
+        axis.text.x = element_text(angle = 7, hjust = 0.5, size = 11),
+        strip.text = element_text(size = 12, face = "bold")) +
+  scale_x_discrete(
+    labels = c(
+      "Other_Lung_Diseases" = "Other lung diseases"
+    )
+  ) 
+
+alpha_long_its <- alpha_data_disease_its %>% 
+  select(Group, Observed, Shannon, Simpson) %>%
+  pivot_longer(cols = c("Observed", "Shannon", "Simpson"), names_to = "Metric", values_to = "Value")
+
+p_alpha_its <- ggplot(alpha_long_its, aes(x = Group, y = Value, fill = Group)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, size = 2) + # points on top of boxes
+  facet_wrap(~Metric, scales = "free_y") + # three plots side by side
+  theme_bw() +
+  labs(title = "Alpha diversity of blood fungiome in patients", x = "", y = "Alpha Diversity Measure") +
+  theme(legend.position = "none", 
+        axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16),
+        plot.title = element_text(size = 18, face = "bold"),
+        axis.text.x = element_text(angle = 7, hjust = 0.5, size = 11),
+        strip.text = element_text(size = 12, face = "bold")) +
+  scale_x_discrete(
+    labels = c(
+      "Other_Lung_Diseases" = "Other lung diseases"
+    )
+  ) 
+
+ggsave("Alpha diversity of blood bacteriome in patients.png", plot = p_alpha_16s, width = 8, height = 6, dpi = 300)
+ggsave("Alpha diversity of blood fungiome in patients.png", plot = p_alpha_its, width = 8, height = 6, dpi = 300)
+```
+
+Beta-Diversity Healthy
+
+```{r}
+
+count_matrix_16s_h_beta <- as(ps_healthy_16s_rarefied, "matrix")
+if(ncol(count_matrix_16s_h_beta) < nrow(count_matrix_16s_h_beta)){ 
+  count_matrix_16s_h_beta <- t(count_matrix_16s_h_beta) 
+}
+sample_ids_16s_h_beta <- rownames(count_matrix_16s_h_beta)
+metadata_df_16s_h_beta <- data.frame(
+  row.names = sample_ids_16s_h_beta,
+  Group = rep("Healthy", length(sample_ids_16s_h_beta)) 
+)
+ps_final_16s_h_beta <- phyloseq(
+  otu_table(count_matrix_16s_h_beta, taxa_are_rows = FALSE),
+  sample_data(metadata_df_16s_h_beta)
+)
+
+ps_rel_16s_h_beta <- transform_sample_counts(ps_final_16s_h_beta, function(x) x / sum(x) * 100)
+
+# 2. Ordination (PCoA with Bray-Curtis)
+ord_bray_16s_h_beta <- ordinate(ps_rel_16s_h_beta, method = "PCoA", distance = "bray")
+
+# 3. Plot (green theme)
+plot_bray_16s_h_beta <- plot_ordination(ps_rel_16s_h_beta, ord_bray_16s_h_beta) +
+  geom_point(size = 4, alpha = 0.8, color = "darkgreen") + 
+  stat_ellipse(type = "norm", linetype = 2, color = "grey") +
+  theme_bw() +
+  labs(title = "Beta Diversity (Bray-Curtis) of blood bacteriome\nin healthy individuals", 
+       subtitle = "PCoA on Relative Abundance",
+       x = "PC1", y = "PC2") +
+  theme(
+        axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16),
+         plot.subtitle = element_text(size = 16),
+        plot.title = element_text(size = 18, face = "bold"),
+        axis.text.x = element_text(angle = 0, hjust = 0.5, size = 11))
+
+ggsave("Beta_Diversity_BrayCurtis.png", plot = plot_bray_16s_h_beta, width = 8, height = 6, dpi = 300)
+
+dist_bray_16s_h_beta <- phyloseq::distance(ps_rel_16s_h_beta, method = "bray")
+meta_stats_16s_h_beta <- data.frame(sample_data(ps_final_16s_h_beta))
+mod_disp_16s_h_beta <- betadisper(dist_bray_16s_h_beta, meta_stats_16s_h_beta$Group)
+df_disp_16s_h_beta <- data.frame(
+  SampleID = names(mod_disp_16s_h_beta$distances),
+  Distance = mod_disp_16s_h_beta$distances,
+  Group = meta_stats_16s_h_beta$Group
+)
+
+mean_dist_16s_h_beta <- mean(df_disp_16s_h_beta$Distance)
+sd_dist_16s_h_beta <- sd(df_disp_16s_h_beta$Distance)
+df_disp_16s_h_beta$Is_Outlier <- df_disp_16s_h_beta$Distance > (mean_dist_16s_h_beta + 2 * sd_dist_16s_h_beta)
+print("Dispersion statistics (distance to centroid):")
+summary(df_disp_16s_h_beta$Distance)
+
+print("Outlier patients (most atypical microbiomes):")
+print(df_disp_16s_h_beta %>% filter(Is_Outlier == TRUE))
+
+
+fungi_vegan_input <- t(otu_matrix_its)
+fungi_binary_clean <- ifelse(fungi_vegan_input > 0, 1, 0)
+dist_fungi <- vegdist(fungi_binary_clean, method = "jaccard")
+
+# Compute PCoA
+pcoa_fungi <- cmdscale(dist_fungi, k = 2, eig = TRUE)
+
+# Build table for plotting
+df_pcoa_fungi <- data.frame(
+  PC1 = pcoa_fungi$points[,1],
+  PC2 = pcoa_fungi$points[,2],
+  SampleID = rownames(pcoa_fungi$points),
+  Group = "Healthy" # Placeholder
+)
+
+# Plot
+p_fungi_beta <- ggplot(df_pcoa_fungi, aes(x = PC1, y = PC2)) +
+  geom_point(size = 4, color = "orange", alpha = 0.8) +
+  theme( axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16),
+         plot.subtitle = element_text(size = 16),
+        plot.title = element_text(size = 18, face = "bold"),
+        axis.text.x = element_text(angle = 0, hjust = 0.5, size = 11)) +
+  labs(title = "Fungal Beta Diversity (Jaccard)",
+       subtitle = paste0("Binary (Presence/Absence)"),
+       x = "PCoA 1", y = "PCoA 2")
+
+print(p_fungi_beta)
+ggsave("Fungi_PCoA_Clean.png", width = 6, height = 5, dpi = 300)
+
+dist_fungi <- vegdist(fungi_binary_clean, method = "jaccard")
+group_vector <- rep("Healthy", nrow(fungi_binary_clean))
+mod_disp_fungi <- betadisper(dist_fungi, group_vector)
+df_disp_fungi <- data.frame(
+  SampleID = names(mod_disp_fungi$distances),
+  Distance = mod_disp_fungi$distances,
+  Group = "Healthy"
+)
+mean_fungi <- mean(df_disp_fungi$Distance)
+sd_fungi <- sd(df_disp_fungi$Distance)
+
+df_disp_fungi$Is_Outlier <- df_disp_fungi$Distance > (mean_fungi + 2 * sd_fungi)
+
+print("--- Fungal Dispersion statistics (Jaccard) ---")
+summary(df_disp_fungi$Distance)
+
+```
+
+Beta Diversity Disease
+
+```{r}
+# ord_bray <- ordinate(ps_rarefied_16s, method = "PCoA", distance = "bray")
+# 
+# p_beta_16s <- plot_ordination(ps_rarefied_16s, ord_bray, color = "Group") +
+#   geom_point(size = 2) +
+#   stat_ellipse(type = "t", level = 0.95, linetype = 2)+
+#   theme_bw() +
+#   theme(
+#         axis.text.y = element_text(size = 11),
+#         axis.title.y = element_text(size = 11),
+#          plot.subtitle = element_text(size = 16),
+#         plot.title = element_text(size = 18, face = "bold"),
+#         axis.text.x = element_text(angle = 0, hjust = 0.5, size = 11)) +
+#   theme(
+#     legend.text = element_text(size = 11),
+#     legend.title = element_text(size = 12)
+#   ) +
+#   labs(title = "Beta Diversity (Bray-Curtis) of blood bacteriome\nin patients") +
+#   scale_color_discrete(
+#     breaks = c("Sarcoidosis", "Other_Lung_Diseases"),
+#     labels = c("Sarcoidosis", "Other lung diseases")
+#   ) 
+# print(p_beta_16s)
+# ggsave("Beta_Diversity_BrayCurtis_Disease_B.png", plot = p_beta_16s, width = 8, height = 6, dpi = 300)
+
+# ord_bray <- ordinate(ps_rarefied_its, method = "PCoA", distance = "bray")
+# 
+# p_beta_its <- plot_ordination(ps_rarefied_its, ord_bray, color = "Group") +
+#   geom_point(size = 2) +
+#   stat_ellipse(type = "t", level = 0.95, linetype = 2)+
+#   theme_bw() +
+#   theme(
+#         axis.text.y = element_text(size = 11),
+#         axis.title.y = element_text(size = 11),
+#          plot.subtitle = element_text(size = 16),
+#         plot.title = element_text(size = 18, face = "bold"),
+#         axis.text.x = element_text(angle = 0, hjust = 0.5, size = 11)) +
+#   theme(
+#     legend.text = element_text(size = 11),
+#     legend.title = element_text(size = 12)
+#   ) +
+#   labs(title = "Beta Diversity (Bray-Curtis) of blood fungiome\nin patients") +
+#   scale_color_discrete(
+#     breaks = c("Sarcoidosis", "Other_Lung_Diseases"),
+#     labels = c("Sarcoidosis", "Other lung diseases")
+#   ) 
+# print(p_beta_its)
+# ggsave("Beta_Diversity_BrayCurtis_Disease_F.png", plot = p_beta_its, width = 8, height = 6, dpi = 300)
+
+
+ps_list <- list(
+  ps_rarefied_16s = ps_rarefied_16s,
+  ps_rarefied_its = ps_rarefied_its
+)
+
+for (ps_rarefied in ps_list) {
+
+
+# Extract data for vegan
+dist_matrix <- phyloseq::distance(ps_rarefied, method = "bray")
+metadata_df <- data.frame(sample_data(ps_rarefied))
+adonis_res <- adonis2(dist_matrix ~ Group, data = metadata_df, permutations = 999)
+print(adonis_res)
+
+dispersion <- betadisper(dist_matrix, metadata_df$Group)
+
+perm_disp <- permutest(dispersion, pairwise = TRUE, permutations = 999)
+
+print("--- BETA DISPERSION RESULTS ---")
+print(perm_disp)}
+```
+
+Differential Abundance of Specific Taxa (Disease Bact)
+
+```{r}
+ps_genus_dif_abund <- tax_glom(ps_rarefied_16s, taxrank = "Genus", NArm = FALSE)
+ps_rel <- transform_sample_counts(ps_genus_dif_abund, function(x) x / sum(x) * 100)
+
+otu_df <- as.data.frame(otu_table(ps_rel))
+tax_df <- as.data.frame(tax_table(ps_rel))
+meta_df <- data.frame(sample_data(ps_rel))
+
+data_long <- otu_df %>%
+  mutate(Taxon_ID = rownames(.)) %>%
+  pivot_longer(cols = -Taxon_ID, names_to = "SampleID", values_to = "Abundance") %>%
+  # Add group info
+  left_join(meta_df %>% rownames_to_column("SampleID"), by = "SampleID") %>%
+  # Add taxon name
+  left_join(tax_df %>% rownames_to_column("Taxon_ID"), by = "Taxon_ID")
+
+# 4. Wilcoxon test per taxon
+# Compare: Sarcoidosis vs Other_Lung_Diseases
+
+# Get list of unique taxa
+unique_taxa <- unique(data_long$Taxon_ID)
+
+# Create an empty results table
+results_list <- list()
+
+for(tax in unique_taxa) {
+  sub_data <- data_long %>% filter(Taxon_ID == tax)
+  
+  if(sum(sub_data$Abundance) < 0.1) next
+  res <- tryCatch({
+    test <- wilcox.test(Abundance ~ Group, data = sub_data, exact = FALSE)
+    data.frame(
+      Taxon_ID = tax,
+      P_value = test$p.value,
+      Mean_Sarc = mean(sub_data$Abundance[sub_data$Group == "Sarcoidosis"]),
+      Mean_Other = mean(sub_data$Abundance[sub_data$Group == "Other_Lung_Diseases"])
+    )
+  }, error = function(e) NULL)
+  
+  results_list[[tax]] <- res
+}
+
+# Collect all results
+diff_res <- bind_rows(results_list)
+
+# 5. Multiple testing correction (FDR / Benjamini-Hochberg)
+diff_res <- diff_res %>%
+  mutate(P_adj = p.adjust(P_value, method = "fdr")) %>%
+  left_join(tax_df %>% rownames_to_column("Taxon_ID"), by = "Taxon_ID") %>% 
+  arrange(P_value)
+
+# 6. OUTPUT RESULTS
+print("--- TOP DIFFERENTIAL TAXA (Unadjusted P < 0.05) ---")
+sig_raw <- diff_res %>% filter(P_value < 0.05) %>% select(Genus, P_value, P_adj, Mean_Sarc, Mean_Other)
+print(sig_raw)
+
+print("--- SIGNIFICANT TAXA (FDR Adjusted P < 0.05) ---")
+# Show those that passed the strict FDR check
+sig_adj <- diff_res %>% filter(P_adj < 0.05) %>% select(Genus, P_value, P_adj, Mean_Sarc, Mean_Other)
+
+if(nrow(sig_adj) == 0) {
+  print("No taxa remained significant after FDR correction.")
+} else {
+  print(sig_adj)
+}
+
+plot_data <- psmelt(ps_rel)
+target_genera <- c("Burkholderia-Caballeronia-Paraburkholderia", "Aggregatibacter",
+                   "Mycobacterium")
+# Filter table
+df_targets <- plot_data %>% 
+  filter(Genus %in% target_genera) %>%
+  filter(Group %in% c("Sarcoidosis", "Other_Lung_Diseases"))
+
+# Shorten Burkholderia name for plot (it's long)
+df_targets$Genus <- gsub("Burkholderia-Caballeronia-Paraburkholderia", "Burkholderia complex", df_targets$Genus)
+
+
+p <- ggplot(df_targets, aes(x = Group, y = Abundance, fill = Group)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.8) +
+  facet_wrap(~Genus, scales = "free_y") +
+  theme_bw() +
+  labs(y = "Relative Abundance (%)", x = NULL, title = "Differentially abundant bacterial genera in patients", subtitle = "(Nominal P < 0.05)") +
+  theme(legend.position = "bottom", 
+        axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16),
+        plot.title = element_text(size = 18, face = "bold"),
+        axis.text.x = element_text(angle = 7, hjust = 0.5, size = 11),
+        strip.text = element_text(size = 12, face = "bold")) +
+  scale_fill_discrete(
+    breaks = c("Sarcoidosis", "Other_Lung_Diseases"),
+    labels = c("Sarcoidosis", "Other lung diseases")
+  ) +
+  scale_x_discrete(
+    labels = c(
+      "Other_Lung_Diseases" = "Other lung diseases"
+    )
+  ) 
+ggsave("Differentially abundant bacterial genera in patients.png", plot = p, width = 8, height = 6, dpi = 300)
+
+ps_genus_raw <- tax_glom(ps_patients_only_16s, taxrank = "Genus", NArm = FALSE)
+
+# 2. Convert to a DESeq2 object
+# Design formula: compare by Group
+ds <- phyloseq_to_deseq2(ps_genus_raw, ~ Group)
+ds <- estimateSizeFactors(ds, type = "poscounts")
+ds <- DESeq(ds, test = "Wald", fitType = "parametric")
+
+# 4. Get results
+# contrast: factor name, numerator (Sarc), denominator (Other)
+res <- results(ds, contrast=c("Group", "Sarcoidosis", "Other_Lung_Diseases"), cooksCutoff = FALSE)
+
+# Add taxonomy
+tax_table_df <- as.data.frame(tax_table(ps_genus_raw))
+res_df <- as.data.frame(res)
+res_df$Taxon <- rownames(res_df)
+# Merge with names (Genus)
+res_final <- merge(res_df, tax_table_df, by="row.names")
+
+target_genera <- c("Mycobacterium", "Burkholderia-Caballeronia-Paraburkholderia", "Aggregatibacter")
+
+print("--- DESeq2 RESULTS FOR CANDIDATES ---")
+subset_res <- res_final %>% 
+  filter(Genus %in% target_genera) %>%
+  select(Genus, log2FoldChange, pvalue, padj)
+
+print(subset_res)
+```
+
+Differential Abundance of Specific Taxa (Disease Fungi)
+
+```{r}
+ps_genus_dif_abund <- tax_glom(ps_rarefied_its, taxrank = "Genus", NArm = FALSE)
+ps_rel <- transform_sample_counts(ps_genus_dif_abund, function(x) x / sum(x) * 100)
+
+otu_df <- as.data.frame(otu_table(ps_rel))
+tax_df <- as.data.frame(tax_table(ps_rel))
+meta_df <- data.frame(sample_data(ps_rel))
+
+data_long <- otu_df %>%
+  mutate(Taxon_ID = rownames(.)) %>%
+  pivot_longer(cols = -Taxon_ID, names_to = "SampleID", values_to = "Abundance") %>%
+  # Add group info
+  left_join(meta_df %>% rownames_to_column("SampleID"), by = "SampleID") %>%
+  # Add taxon name
+  left_join(tax_df %>% rownames_to_column("Taxon_ID"), by = "Taxon_ID")
+
+# 4. Wilcoxon test per taxon
+# Compare: Sarcoidosis vs Other_Lung_Diseases
+
+# Get list of unique taxa
+unique_taxa <- unique(data_long$Taxon_ID)
+
+# Create an empty results table
+results_list <- list()
+
+for(tax in unique_taxa) {
+  sub_data <- data_long %>% filter(Taxon_ID == tax)
+  
+  if(sum(sub_data$Abundance) < 0.1) next
+  res <- tryCatch({
+    test <- wilcox.test(Abundance ~ Group, data = sub_data, exact = FALSE)
+    data.frame(
+      Taxon_ID = tax,
+      P_value = test$p.value,
+      Mean_Sarc = mean(sub_data$Abundance[sub_data$Group == "Sarcoidosis"]),
+      Mean_Other = mean(sub_data$Abundance[sub_data$Group == "Other_Lung_Diseases"])
+    )
+  }, error = function(e) NULL)
+  
+  results_list[[tax]] <- res
+}
+
+# Collect all results
+diff_res <- bind_rows(results_list)
+
+# 5. Multiple testing correction (FDR / Benjamini-Hochberg)
+diff_res <- diff_res %>%
+  mutate(P_adj = p.adjust(P_value, method = "fdr")) %>%
+  left_join(tax_df %>% rownames_to_column("Taxon_ID"), by = "Taxon_ID") %>% 
+  arrange(P_value)
+
+# 6. OUTPUT RESULTS
+print("--- TOP DIFFERENTIAL TAXA (Unadjusted P < 0.05) ---")
+sig_raw <- diff_res %>% filter(P_value < 0.05) %>% select(Genus, P_value, P_adj, Mean_Sarc, Mean_Other)
+print(sig_raw)
+
+print("--- SIGNIFICANT TAXA (FDR Adjusted P < 0.05) ---")
+# Show those that passed the strict FDR check
+sig_adj <- diff_res %>% filter(P_adj < 0.05) %>% select(Genus, P_value, P_adj, Mean_Sarc, Mean_Other)
+
+if(nrow(sig_adj) == 0) {
+  print("No taxa remained significant after FDR correction.")
+} else {
+  print(sig_adj)
+}
+
+
+plot_data <- psmelt(ps_rel)
+target_genera <- c("Cladosporium", "Blumeria",
+                   "Amanitaceae_gen_Incertae_sedis", "Rozellomycota_gen_Incertae_sedis")
+# Filter table
+df_targets <- plot_data %>% 
+  filter(Genus %in% target_genera) %>%
+  filter(Group %in% c("Sarcoidosis", "Other_Lung_Diseases"))
+df_targets$Genus <- gsub("Amanitaceae_gen_Incertae_sedis", "Amanitaceae genus Incertae sedis", df_targets$Genus)
+df_targets$Genus <- gsub("Rozellomycota_gen_Incertae_sedis", "Rozellomycota genus Incertae sedis", df_targets$Genus)
+
+p_fungi <- ggplot(df_targets, aes(x = Group, y = Abundance, fill = Group)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.8) +
+  facet_wrap(~Genus, scales = "free_y") +
+  theme_bw() +
+  labs(y = "Relative Abundance (%)", x = NULL, title = "Differentially abundant fungal genera in patients", subtitle = "(Nominal P < 0.05)") +
+  theme(legend.position = "bottom", 
+        axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16),
+        plot.title = element_text(size = 18, face = "bold"),
+        axis.text.x = element_text(angle = 7, hjust = 0.5, size = 11),
+        strip.text = element_text(size = 12, face = "bold")) +
+  scale_fill_discrete(
+    breaks = c("Sarcoidosis", "Other_Lung_Diseases"),
+    labels = c("Sarcoidosis", "Other lung diseases")
+  ) +
+  scale_x_discrete(
+    labels = c(
+      "Other_Lung_Diseases" = "Other lung diseases"
+    )
+  ) 
+ggsave("Differentially abundant fungal genera in patients.png", plot = p_fungi, width = 8, height = 6, dpi = 300)
+
+ps_genus_raw <- tax_glom(ps_patients_only_its, taxrank = "Genus", NArm = FALSE)
+
+# 2. Convert to a DESeq2 object
+# Design formula: compare by Group
+ds <- phyloseq_to_deseq2(ps_genus_raw, ~ Group)
+ds <- estimateSizeFactors(ds, type = "poscounts")
+ds <- DESeq(ds, test = "Wald", fitType = "parametric")
+
+# 4. Get results
+# contrast: factor name, numerator (Sarc), denominator (Other)
+res <- results(ds, contrast=c("Group", "Sarcoidosis", "Other_Lung_Diseases"), cooksCutoff = FALSE)
+
+# Add taxonomy
+tax_table_df <- as.data.frame(tax_table(ps_genus_raw))
+res_df <- as.data.frame(res)
+res_df$Taxon <- rownames(res_df)
+# Merge with names (Genus)
+res_final <- merge(res_df, tax_table_df, by="row.names")
+
+target_genera <- c("Cladosporium", "Blumeria",
+                   "Amanitaceae_gen_Incertae_sedis", "Rozellomycota_gen_Incertae_sedis")
+
+print("--- DESeq2 RESULTS FOR CANDIDATES ---")
+subset_res <- res_final %>% 
+  filter(Genus %in% target_genera) %>%
+  select(Genus, log2FoldChange, pvalue, padj)
+
+print(subset_res)
+```
+
+Validation: Abundance Check for High-FC Fungi
+
+```{r}
+# ============================================================
+# CRITICAL VALIDATION: Are DESeq2 results real or artifacts?
+# ============================================================
+
+cat("\n\n=== ABUNDANCE VALIDATION FOR HIGH log2FC FUNGI ===\n\n")
+
+# Get rarefied OTU table (after normalization to 305 reads)
+otu_fungi_rarefied <- as.data.frame(otu_table(ps_rarefied_its))
+meta_fungi <- data.frame(sample_data(ps_rarefied_its))
+tax_its <- as.data.frame(tax_table(ps_rarefied_its))
+
+sarc_samples <- rownames(meta_fungi)[meta_fungi$Group == "Sarcoidosis"]
+old_samples <- rownames(meta_fungi)[meta_fungi$Group == "Other_Lung_Diseases"]
+
+# Focus on top candidates from DESeq2
+candidates <- c("Cladosporium", "Rozellomycota_gen_Incertae_sedis")
+
+for(taxon_name in candidates) {
+  cat("\n=== ", taxon_name, " ===\n", sep="")
+  
+  # Find index in taxonomy
+  idx <- which(grepl(taxon_name, tax_its$Genus, ignore.case=TRUE))[1]
+  
+  if(!is.na(idx)) {
+    
+    sarc_values <- as.numeric(otu_fungi_rarefied[idx, sarc_samples])
+    old_values <- as.numeric(otu_fungi_rarefied[idx, old_samples])
+    
+    cat("After rarefaction (305 reads/sample):\n\n")
+    
+    cat("SARCOIDOSIS (n=", length(sarc_samples), "):\n", sep="")
+    cat("  Reads:", paste(round(sarc_values, 1), collapse=", "), "\n")
+    cat("  Sum:", sum(sarc_values), "\n")
+    cat("  Mean:", round(mean(sarc_values), 2), "\n")
+    cat("  Median:", round(median(sarc_values), 2), "\n")
+    cat("  % of total 305 reads:", round(mean(sarc_values)/305*100, 2), "%\n")
+    cat("  Prevalence:", sum(sarc_values > 0), "/", length(sarc_samples), "\n\n")
+    
+    cat("OTHER LUNG DISEASES (n=", length(old_samples), "):\n", sep="")
+    cat("  Reads:", paste(round(old_values, 1), collapse=", "), "\n")
+    cat("  Sum:", sum(old_values), "\n")
+    cat("  Mean:", round(mean(old_values), 2), "\n")
+    cat("  Median:", round(median(old_values), 2), "\n")
+    cat("  % of total 305 reads:", round(mean(old_values)/305*100, 2), "%\n")
+    cat("  Prevalence:", sum(old_values > 0), "/", length(old_samples), "\n\n")
+    
+    cat("ASSESSMENT:\n")
+    if(mean(sarc_values) < 0.1 && mean(old_values) < 0.1) {
+      cat("  ⚠️ BOTH groups have extremely low abundance (<0.1 reads)\n")
+      cat("     Signal is at NOISE level, likely ARTIFACT\n")
+    } else if(mean(sarc_values) < 1) {
+      cat("  ⚠️ Mean abundance in Sarcoidosis <1 read\n")
+      cat("     After rarefaction to 305 reads, this is <0.3%\n")
+      cat("     Signal may be lost in statistical noise\n")
+    } else {
+      cat("  ✓ Mean abundance in Sarcoidosis ≥1 read\n")
+      cat("     More robust for analysis\n")
+    }
+    
+    # Wilcoxon on these specific values
+    wtest <- wilcox.test(sarc_values, old_values)
+    cat("  Wilcoxon p-value:", format(wtest$p.value, digits=4), "\n")
+    
+  } else {
+    cat("  ERROR: Not found in taxonomy\n")
+  }
+}
+
+cat("\n\n=== OVERALL ASSESSMENT ===\n")
+cat("If high log2FC fungi have <0.5 reads mean abundance in rarefied data:\n")
+cat("  → Results are HYPOTHESIS-GENERATING ONLY\n")
+cat("  → Must validate with qPCR on original samples\n")
+cat("  → Or increase sequencing depth for fungi (currently 305 reads is very low)\n")
+```
+
+Inter-kingdom Balance (Bacteriome/Mycobiome Ratio) Healthy
+
+```{r}
+bact_counts <- sample_sums(ps_healthy_16s_pruned)
+df_bact <- data.frame(SampleID = names(bact_counts), Bacteria = bact_counts)
+
+fungi_counts <- rowSums(otu_samples_its, na.rm = TRUE)
+df_fungi <- data.frame(SampleID = names(fungi_counts), Fungi = fungi_counts)
+
+# === 3. Merge tables ===
+# Function to clean names (remove leading X and replace dots with dashes so IDs match)
+clean_names_aggressive <- function(x) {
+  x <- gsub("^X", "", x)         # Remove leading X (X17095 -> 17095)
+  x <- gsub("\\.", "-", x)       # Replace dots with dashes (17095.0005 -> 17095-0005)
+  x <- gsub("_S[0-9]+.*", "", x) # Remove _S... suffix (17095-0005_S17 -> 17095-0005)
+  x <- gsub("_.*", "", x)        # Drop anything after any underscore as a final cleanup
+  return(x)
+}
+
+df_bact$ID_Clean <- clean_names_aggressive(df_bact$SampleID)
+df_fungi$ID_Clean <- clean_names_aggressive(df_fungi$SampleID)
+
+df_ratio <- merge(df_bact, df_fungi, by = "ID_Clean")
+
+df_ratio$Ratio <- log10((df_ratio$Bacteria + 1) / (df_ratio$Fungi + 1))
+
+# === 5. Visualization ===
+# df_ratio <- df_ratio %>% arrange(Ratio)
+# df_ratio$ID_Clean <- factor(df_ratio$ID_Clean, levels = df_ratio$ID_Clean)
+# 
+# p_dot <- ggplot(df_ratio, aes(x = ID_Clean, y = Ratio)) +
+#   geom_point(size = 3, color = ifelse(df_ratio$Ratio > 0, "#4E84C4", "orange")) +
+#   geom_hline(yintercept = 0, linetype = "dashed") +
+#   theme_bw() +
+#   labs(title = "B/F Ratio per Sample", y = "Log10 Ratio") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 6))
+# 
+# print(p_dot)
+```
+
+Richness Ratio (Bacterial ASVs / Fungal ASVs) Healthy
+
+```{r}
+bact_rich <- alpha_data_healthy_16s %>%
+  dplyr::select(SampleID, Observed) %>%
+  dplyr::rename(Observed_Bact = Observed)
+
+fungi_rich <- alpha_data_healthy_its %>%
+  dplyr::select(SampleID, Observed) %>%
+  dplyr::rename(Observed_Fungi = Observed)
+
+bact_rich$ID_Clean <- clean_names_aggressive(bact_rich$SampleID)
+fungi_rich$ID_Clean <- clean_names_aggressive(fungi_rich$SampleID)
+
+# Merge
+df_rich_ratio <- merge(bact_rich, fungi_rich, by = "ID_Clean")
+
+# === 3. RATIO CALCULATION ===
+# Formula: Richness Ratio = (Bacteria + 1) / (Fungi + 1)
+# We do NOT take the log right away to keep an intuitive fold-change value.
+# We take the log only for plotting, if needed.
+
+df_rich_ratio$Rich_Ratio_Linear <- (df_rich_ratio$Observed_Bact + 1) / (df_rich_ratio$Observed_Fungi + 1)
+df_rich_ratio$Rich_Ratio_Log <- log10(df_rich_ratio$Rich_Ratio_Linear)
+
+# Statistics
+print("Richness Ratio stats (linear: how many times more bacteria):")
+summary(df_rich_ratio$Rich_Ratio_Linear)
+
+```
+
+Correlation Healthy
+
+```{r}
+p_rich_corr <- ggplot(df_rich_ratio, aes(x = Observed_Bact, y = Observed_Fungi)) +
+  geom_point(size = 3, color = "purple", alpha = 0.7) +
+  geom_smooth(method = "lm", color = "black", linetype = "dashed", se = FALSE) +
+  theme_bw() +
+  labs(title = "Diversity correlation in healthy individuals",
+       x = "Bacterial richness (Observed taxa)",
+       y = "Fungal richness (Observed taxa)") +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "top") +
+  theme(
+        axis.title.y = element_text(size = 14),
+        axis.title.x = element_text(size = 14),
+        plot.title = element_text(size = 18, face = "bold"),
+        strip.text = element_text(size = 12, face = "bold")) 
+
+print(p_rich_corr)
+ggsave("Richness_Correlation.png", width = 8, height = 6, dpi = 300)
+```
+
+Inter-kingdom Balance (Bacteriome/Mycobiome Ratio) Disease
+
+```{r}
+raw_bac_reads <- sample_sums(ps_patients_only_16s) 
+raw_fun_reads <- sample_sums(ps_patients_only_its)
+
+# 2. Build table
+df_biomass <- data.frame(
+  SampleID = names(raw_bac_reads),
+  Raw_Bac = raw_bac_reads,
+  Group = sample_data(ps_patients_only_16s)$Group
+)
+
+# Add fungi (via merge so IDs match)
+df_fun_raw <- data.frame(
+  SampleID = names(raw_fun_reads),
+  Raw_Fun = raw_fun_reads
+)
+
+df_final_ratio_disease <- merge(df_biomass, df_fun_raw, by = "SampleID")
+
+df_final_ratio_disease <- df_final_ratio_disease %>%
+  filter(Group %in% c("Sarcoidosis", "Other_Lung_Diseases")) %>%
+  droplevels()
+
+# 3. Compute B/M Ratio
+# log10((Bacteria + 1) / (Fungi + 1))
+df_final_ratio_disease$BM_Ratio <- log10((df_final_ratio_disease$Raw_Bac + 1) / (df_final_ratio_disease$Raw_Fun + 1))
+
+# 4. Statistics
+wilcox.test(BM_Ratio ~ Group, data = df_final_ratio_disease)
+
+tapply(df_final_ratio_disease$BM_Ratio,
+       df_final_ratio_disease$Group,
+       summary)
+
+```
+
+Richness Ratio (Bacterial ASVs / Fungal ASVs) Disease
+
+```{r}
+bac_rich <- estimate_richness(ps_rarefied_16s, measures = "Observed")
+
+df_bac <- data.frame(
+  SampleID = sample_names(ps_rarefied_16s),
+  Group = sample_data(ps_rarefied_16s)$Group,
+  Bac_Richness = bac_rich$Observed
+)
+
+fun_rich <- estimate_richness(ps_rarefied_its, measures = "Observed")
+
+df_fun <- data.frame(
+  SampleID = sample_names(ps_rarefied_its),
+  Fun_Richness = fun_rich$Observed
+)
+
+kingdom_df <- merge(df_bac, df_fun, by = "SampleID")
+
+print(paste("Bacteria samples:", nrow(df_bac)))
+print(paste("Fungi samples:", nrow(df_fun)))
+print(paste("TOTAL samples for analysis:", nrow(kingdom_df)))
+
+# B. Diversity Ratio: how many times more bacteria than fungi?
+kingdom_df$Div_Ratio <- kingdom_df$Bac_Richness / kingdom_df$Fun_Richness
+
+print("--- DIVERSITY RATIO STATISTICS ---")
+res_div <- wilcox.test(Div_Ratio ~ Group, data = kingdom_df)
+print(res_div)
+
+tapply(kingdom_df$Div_Ratio, kingdom_df$Group, summary)
+```
+
+Correlation Disease
+
+```{r}
+old_data <- kingdom_df %>% filter(Group == "Other_Lung_Diseases")
+cor_old <- cor.test(old_data$Bac_Richness, old_data$Fun_Richness, method = "spearman")
+
+# 2. Compute correlation FOR SARCOIDOSIS
+sarc_data <- kingdom_df %>% filter(Group == "Sarcoidosis")
+cor_sarc <- cor.test(sarc_data$Bac_Richness, sarc_data$Fun_Richness, method = "spearman")
+
+print("--- CORRELATION: OLD ---")
+print(paste("Rho:", round(cor_old$estimate, 3), "P-value:", round(cor_old$p.value, 3)))
+
+print("--- CORRELATION: SARCOIDOSIS ---")
+print(paste("Rho:", round(cor_sarc$estimate, 3), "P-value:", round(cor_sarc$p.value, 3)))
+
+ggplot(kingdom_df, aes(x = Bac_Richness, y = Fun_Richness, color = Group)) +
+
+  geom_point(size = 2, alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed") +
+  theme_bw() +
+  labs(title = "Diversity correlation in patients",
+       x = "Bacterial richness (Observed taxa)",
+       y = "Fungal richness (Observed taxa)",
+       subtitle = "Relationship between bacterial and fungal richness by group") +
+  theme(legend.position = "bottom", 
+        axis.text.y = element_text(size = 11),
+        axis.title.y = element_text(size = 14),
+        axis.title.x = element_text(size = 14),
+        plot.title = element_text(size = 18, face = "bold"),
+          plot.subtitle = element_text(size = 16),
+        axis.text.x = element_text(angle = 0, hjust = 0.5, size = 11),
+        strip.text = element_text(size = 12, face = "bold")) +
+  scale_color_discrete(
+    breaks = c("Sarcoidosis", "Other_Lung_Diseases"),
+    labels = c("Sarcoidosis", "Other lung diseases")
+  ) 
+
+
+ggsave("Richness_Correlation_Disease.png", width = 8, height = 6, dpi = 300)
+```
