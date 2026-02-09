@@ -54,8 +54,8 @@ df_clean_healthy_its <- df_clean_healthy_its %>%
 Data load disease
 
 ```{r cars}
-df_disease_16s <- read_excel("C:\\Users\\Admin\\Documents\\bfratio\\data\\16S featureTable.sample.g.absolute.xlsm")
-df_disease_its <- read.delim("C:\\Users\\Admin\\Documents\\bfratio\\data\\featureTable.sample.g.absolute.xls")
+df_disease_16s <- read_excel("data\\16S featureTable.sample.g.absolute.xlsm")
+df_disease_its <- read.delim("data\\featureTable.sample.g.absolute.xls")
 
 # Sarcoidosis
 sarc_samples <- c("S2", "S7", "S16", "S26", "S33", "S37", "S42", "S47", "S51", "S54", "S57", "S61", "S64")
